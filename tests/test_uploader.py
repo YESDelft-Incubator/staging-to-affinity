@@ -45,6 +45,31 @@ def test_boolean_dropdown():
     assert V.match_boolean_dropdown("maybe", yn) is None
 
 
+def test_alias_fixes_typo_inside_multi_value():
+    aliases = [{"sheet_value": "Constuction, Real estate, and Civil infrastructure",
+                "affinity_option": "Construction, Real estate, and Civil infrastructure", "field_id": ""}]
+    opts = OPTS + [{"id": 5, "text": "Construction, Real estate, and Civil infrastructure"}]
+    raw = V.apply_aliases("Constuction, Real estate, and Civil infrastructure, Energy and Utilities",
+                          aliases, "field-1")
+    matched, unknown = V.match_multi_dropdown(raw, opts)
+    assert sorted(o["id"] for o in matched) == [2, 5] and unknown == []
+
+
+def test_alias_limited_to_field():
+    aliases = [{"sheet_value": "Foo", "affinity_option": "Bar", "field_id": "field-2"}]
+    assert V.apply_aliases("Foo", aliases, "field-1") == "Foo"
+    assert V.apply_aliases("Foo", aliases, "field-2") == "Bar"
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("+31600000002", "+31600000002"), ("31600000003", "+31600000003"),
+    ("66900000004", "+66900000004"), ("0612345678", "+31612345678"),
+    ("0031612345678", "+31612345678"), ("612345678", "+31612345678"),
+    ("+31 6 1234 5678", "+31612345678"), ("abc", None), ("123", None)])
+def test_phone(raw, expected):
+    assert V.normalise_phone(raw) == expected
+
+
 # ---- other conversions ------------------------------------------------------
 @pytest.mark.parametrize("raw,expected", [
     ("Nederland", "Netherlands"), ("the Netherlands", "Netherlands"), ("NL", "Netherlands"),
