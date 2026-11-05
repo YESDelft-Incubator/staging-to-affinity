@@ -3,11 +3,12 @@
 Run:  python -m uploader.main            (all sheets in config/sheets.yaml)
       python -m uploader.main <sheet_id> (one sheet)
 
-Each staging sheet has three tabs:
+Each staging sheet has these tabs:
   Entries  rows to upload; the uploader writes status, affinity_person_id,
            processed_at and message back into it
   Config   key/value settings (target list, dry_run, ...)
   Mapping  which sheet column goes to which Affinity field (see docs/staging_sheet.md)
+  Aliases  optional: sheet values that differ from the Affinity option text
 
 Version 1 supports person lists (MYCF). Company lists (scouting) come next.
 """
@@ -54,6 +55,18 @@ def read_mapping(sh):
     return mapping
 
 
+def read_aliases(sh):
+    """Optional Aliases tab: sheet_value | affinity_option | field_id (empty = all fields)."""
+    try:
+        rows = sh.worksheet("Aliases").get_all_records()
+    except gspread.exceptions.WorksheetNotFound:
+        return []
+    return [{"sheet_value": str(r.get("sheet_value", "")).strip(),
+             "affinity_option": str(r.get("affinity_option", "")).strip(),
+             "field_id": str(r.get("field_id", "")).strip()}
+            for r in rows if str(r.get("sheet_value", "")).strip()]
+
+
 def truthy(v, default):
     if v is None or str(v).strip() == "":
         return default
@@ -75,11 +88,16 @@ class RowPlan:
         self.messages = []
 
 
-def convert(m, raw, fields):
+def convert(m, raw, fields, aliases=()):
     """Sheet value -> list of (affinity_value, display_text). Raises ValueError on problems."""
     t = m["type"]
     if t == "text":
         return [(raw.strip(), raw.strip())]
+    if t == "phone":
+        p = V.normalise_phone(raw)
+        if not p:
+            raise ValueError(f"phone '{raw}' not readable")
+        return [(p, p)]
     if t == "country":
         name, ok = V.normalise_country(raw)
         if not ok:
@@ -91,6 +109,7 @@ def convert(m, raw, fields):
             raise ValueError(f"date '{raw}' not readable")
         return [(iso, iso)]
     options = fields.get(m["field_id"], {}).get("options", [])
+    raw = V.apply_aliases(raw, aliases, m["field_id"])
     if t == "dropdown":
         o = V.match_dropdown(raw, options)
         if not o:
@@ -114,7 +133,7 @@ def existing_text(fv):
     return v.get("text", "") if isinstance(v, dict) else ("" if v is None else str(v))
 
 
-def plan_row(row, cfg, mapping, fields, aff):
+def plan_row(row, cfg, mapping, fields, aff, aliases=()):
     plan = RowPlan()
     approved = V.is_approved(row)
     list_id = int(cfg["affinity_list_id"])
@@ -133,7 +152,7 @@ def plan_row(row, cfg, mapping, fields, aff):
             note_parts.append(f"{m['label'] or m['column']}:\n{raw}")
             continue
         try:
-            converted.append((m, convert(m, raw, fields)))
+            converted.append((m, convert(m, raw, fields, aliases)))
         except ValueError as e:
             plan.problems.append(str(e))
     if plan.problems and not approved:
@@ -308,6 +327,7 @@ def run_sheet(gc, aff, sheet_id):
     sh = gc.open_by_key(sheet_id)
     cfg = read_config(sh)
     mapping = read_mapping(sh)
+    aliases = read_aliases(sh)
     dry_run = truthy(cfg.get("dry_run"), default=True)
     max_rows = int(cfg.get("max_rows_per_run") or DEFAULT_MAX_ROWS)
     if cfg.get("entity_type", "person") != "person":
@@ -344,7 +364,7 @@ def run_sheet(gc, aff, sheet_id):
         now = datetime.now(AMS).strftime("%Y-%m-%d %H:%M")
         status, pid, msg = row.get("status"), row.get("affinity_person_id", ""), ""
         try:
-            plan = plan_row(row, cfg, mapping, fields, aff)
+            plan = plan_row(row, cfg, mapping, fields, aff, aliases)
             if plan.problems and not V.is_approved(row):
                 msg = "needs decision=approve: " + "; ".join(plan.problems)
                 if dry_run:
