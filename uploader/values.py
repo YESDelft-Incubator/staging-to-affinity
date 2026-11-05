@@ -71,6 +71,46 @@ def match_boolean_dropdown(value, options):
     return None
 
 
+# ---- aliases (Aliases tab: sheet value -> Affinity option) ----------------
+def apply_aliases(raw, aliases, field_id):
+    """Replace known misspellings before dropdown matching.
+    aliases: list of dicts with sheet_value, affinity_option, field_id ('' = all fields)."""
+    out = raw
+    for a in sorted(aliases, key=lambda a: len(a["sheet_value"]), reverse=True):
+        if a["field_id"] and a["field_id"] != field_id:
+            continue
+        idx = out.lower().find(a["sheet_value"].lower())
+        while idx >= 0:
+            out = out[:idx] + a["affinity_option"] + out[idx + len(a["sheet_value"]):]
+            idx = out.lower().find(a["sheet_value"].lower(), idx + len(a["affinity_option"]))
+    return out
+
+
+# ---- phone numbers -------------------------------------------------------
+def normalise_phone(value):
+    """International format, '+' and digits only. Returns None if unreadable.
+    Same rules as registration-preprocessing: 00 -> +, leading 0 = Dutch (+31),
+    9 digits starting with 6 = Dutch mobile, digits with a country code get a '+'."""
+    v = re.sub(r"[\s\-().]", "", value.strip())
+    if v.startswith("+"):
+        digits, plus = v[1:], True
+    else:
+        digits, plus = v, False
+    if not digits.isdigit():
+        return None
+    if plus:
+        out = "+" + digits
+    elif digits.startswith("00"):
+        out = "+" + digits[2:]
+    elif digits.startswith("0"):
+        out = "+31" + digits[1:]
+    elif len(digits) == 9 and digits.startswith("6"):
+        out = "+31" + digits
+    else:
+        out = "+" + digits
+    return out if 9 <= len(out) - 1 <= 15 else None
+
+
 # ---- countries -----------------------------------------------------------
 COUNTRY_ALIASES = {
     "nederland": "Netherlands", "the netherlands": "Netherlands", "nl": "Netherlands",
