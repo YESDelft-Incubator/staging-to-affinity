@@ -1,7 +1,7 @@
 sheet_column,affinity_field_id,field_type,scope,write_mode,label
 submitted_at,field-5991538,date,list,set,
 mycf_edition,field-5991539,text,list,append_text,
-phone,field-5323063,text,global,fill_if_empty,
+phone,field-5323063,phone,global,fill_if_empty,
 linkedin_url,field-5966851,text,global,fill_if_empty,
 city,field-5991540,text,list,fill_if_empty,
 country,field-5991541,country,list,fill_if_empty,
