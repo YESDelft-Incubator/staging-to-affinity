@@ -1,0 +1,8 @@
+# Staging sheets the uploader processes, in this order.
+# To add a sheet: copy an entry, paste the spreadsheet ID from its URL, set enabled: true.
+# Each sheet needs the tabs Entries, Config and Mapping (see docs/staging_sheet.md).
+# Give the service account (see README) Editor access to the sheet.
+sheets:
+  - name: MYCF New Entries
+    id: 1agwM61fSoYLrBnlDCdiQjmxOjPRjZ4oJ2ty77ZaE1uw
+    enabled: true
