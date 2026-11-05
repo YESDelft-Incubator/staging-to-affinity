@@ -1,0 +1,34 @@
+name: Staging sheets to Affinity
+
+on:
+  schedule:
+    - cron: "0 6 * * *"   # daily 06:00 UTC (07:00 or 08:00 Amsterdam)
+  workflow_dispatch:
+    inputs:
+      sheet_id:
+        description: "Only this staging sheet (leave empty for all sheets in config/sheets.yaml)"
+        required: false
+        default: ""
+
+concurrency:
+  group: staging-to-affinity
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Tests
+        run: python -m pytest -q tests
+      - name: Upload
+        env:
+          AFFINITY_API_TOKEN: ${{ secrets.AFFINITY_API_TOKEN }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SHEET_ID: ${{ github.event.inputs.sheet_id }}
+        run: python -m uploader.main $SHEET_ID
