@@ -50,6 +50,11 @@ class Affinity:
         email = email.lower()
         return [p for p in persons if email in [e.lower() for e in p.get("emails", [])]]
 
+    def find_organizations(self, name):
+        """Organizations matching a name search (v1 /organizations?term=)."""
+        res = self._call("GET", "/organizations", params={"term": name})
+        return res.get("organizations", []) if isinstance(res, dict) else (res or [])
+
     def get_person(self, person_id):
         return self._call("GET", f"/persons/{person_id}")
 
