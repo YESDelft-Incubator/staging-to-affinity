@@ -162,7 +162,10 @@ def raw_value(m, row, cfg):
     return (row.get(m["column"]) or "").strip()
 
 
-def plan_row(row, cfg, mapping, fields, aff, aliases=()):
+def plan_row(row, cfg, mapping, fields, aff, aliases=(), seen=None):
+    """seen: emails handled earlier in this run (all sheets) -> person id, or None when the
+    person is only planned (dry run). Affinity's search can lag right after a create, so a
+    person created by an earlier row is reused by id instead of searched again."""
     plan = RowPlan()
     approved = V.is_approved(row)
     list_id = int(cfg["affinity_list_id"])
@@ -195,7 +198,13 @@ def plan_row(row, cfg, mapping, fields, aff, aliases=()):
         plan.messages.append("approved with skipped values: " + "; ".join(plan.problems))
 
     # 2. person: match on email only
-    matches = aff.find_persons_by_email(email)
+    seen = {} if seen is None else seen
+    if email in seen and seen[email] is not None:
+        matches = [{"id": seen[email]}]
+    else:
+        matches = aff.find_persons_by_email(email)
+        if not matches and email in seen:
+            plan.messages.append("same person as an earlier row in this run: a live run reuses that person")
     if len(matches) > 1:
         raise ValueError(f"{len(matches)} persons in Affinity share {email}: "
                          + ", ".join(str(p["id"]) for p in matches))
@@ -383,7 +392,8 @@ def execute(plan, row, cfg, fields, aff, log):
 
 
 # ---- one staging sheet -------------------------------------------------------
-def run_sheet(gc, aff, sheet_id):
+def run_sheet(gc, aff, sheet_id, seen=None):
+    seen = {} if seen is None else seen
     sh = gc.open_by_key(sheet_id)
     cfg = read_config(sh)
     mapping = read_mapping(sh)
@@ -425,7 +435,7 @@ def run_sheet(gc, aff, sheet_id):
         now = datetime.now(AMS).strftime("%Y-%m-%d %H:%M")
         status, pid, msg = row.get("status"), row.get("affinity_person_id", ""), ""
         try:
-            plan = plan_row(row, cfg, mapping, fields, aff, aliases)
+            plan = plan_row(row, cfg, mapping, fields, aff, aliases, seen)
             if plan.problems and not V.is_approved(row):
                 msg = "needs decision=approve: " + "; ".join(plan.problems)
                 if dry_run:
@@ -433,11 +443,13 @@ def run_sheet(gc, aff, sheet_id):
                 else:
                     status = "review"
             elif dry_run:
+                seen.setdefault((row.get("email") or "").strip().lower(), plan.person_id)
                 msg = "DRY RUN would: " + describe(plan, fields)
                 if plan.messages:
                     msg += " | " + " | ".join(plan.messages)
             else:
                 execute(plan, row, cfg, fields, aff, log)
+                seen[(row.get("email") or "").strip().lower()] = plan.person_id
                 status, pid = "uploaded", str(plan.person_id)
                 msg = describe(plan, fields) + (" | " + " | ".join(plan.messages) if plan.messages else "")
         except Exception as e:  # one bad row must not stop the run
@@ -460,8 +472,9 @@ def main():
     else:
         with open(os.path.join(os.path.dirname(__file__), "..", "config", "sheets.yaml")) as f:
             sheet_ids = [s["id"] for s in yaml.safe_load(f)["sheets"] if s.get("enabled", True)]
+    seen = {}  # shared across sheets: the same person can be in MYCF and both Talent sheets
     for sid in sheet_ids:
-        run_sheet(gc, aff, sid)
+        run_sheet(gc, aff, sid, seen)
 
 
 if __name__ == "__main__":
