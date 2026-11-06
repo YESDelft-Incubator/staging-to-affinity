@@ -6,3 +6,9 @@ sheets:
   - name: MYCF New Entries
     id: 1agwM61fSoYLrBnlDCdiQjmxOjPRjZ4oJ2ty77ZaE1uw
     enabled: true
+  - name: Talent Open Applications New Entries
+    id: 1vYw951TEVAJp4WfM3dHAXcv1TS3OVNoZ3RGJhCBo68Y
+    enabled: true
+  - name: Talent Direct Applications New Entries
+    id: 1U0ppcViV2TpGTghObcFkenhrkwmqmbi4H9J4O8h_9HU
+    enabled: true
