@@ -104,6 +104,9 @@ class FakeAffinity:
     def field_values(self, person_id=None, list_entry_id=None):
         return self.fvs
 
+    def find_organizations(self, name):
+        return getattr(self, "orgs", [])
+
 
 CFG = {"affinity_list_id": "373806", "affinity_status_field_id": "field-5966848",
        "affinity_status_value": "New", "note_title": "MYCF registration"}
@@ -164,3 +167,100 @@ def test_plan_ambiguous_email_raises():
     fake = FakeAffinity(persons=[{"id": 1, "emails": []}, {"id": 2, "emails": []}])
     with pytest.raises(ValueError):
         plan_row(dict(ROW), CFG, MAPPING, FIELDS, fake)
+
+
+# ---- Talent features: config values, add_missing, template, counter, company lookup ----
+def test_ignore_flags():
+    ign = ["invalid_phone", "linkedin_not_usable"]
+    assert V.row_is_eligible({"status": "new", "flags": "invalid_phone", "decision": ""}, ign)
+    assert not V.row_is_eligible({"status": "new", "flags": "invalid_phone, name_inferred", "decision": ""}, ign)
+    assert not V.row_is_eligible({"status": "new", "flags": "invalid_phone", "decision": ""})
+
+
+def test_template():
+    t = "[{submitted_at|date}: ]{job_title}[ ({company})]"
+    assert V.render_template(t, {"submitted_at": "2026-10-23 10:00:00", "job_title": "Process Engineer",
+                                 "company": "AddOptics"}) == "2026-10-23: Process Engineer (AddOptics)"
+    assert V.render_template(t, {"submitted_at": "2026-10-23", "job_title": "Process Engineer",
+                                 "company": ""}) == "2026-10-23: Process Engineer"
+
+
+def test_normalise_company():
+    assert V.normalise_company("Villari B.V.") == V.normalise_company("Villari") == "villari"
+    assert V.normalise_company("Effium BV") == "effium"
+
+
+T_CFG = {"affinity_list_id": "376483", "affinity_status_field_id": "field-5991214",
+         "affinity_status_value": "New", "application_type": "Direct application"}
+T_FIELDS = {"field-5991214": {"name": "Status", "options": [{"id": 1, "text": "New"}]},
+            "field-6000986": {"name": "Application type",
+                              "options": [{"id": 41, "text": "Open application"},
+                                          {"id": 42, "text": "Direct application"}]},
+            "field-6000989": {"name": "Applications", "options": []},
+            "field-6000990": {"name": "Number of applications", "options": []},
+            "field-6000987": {"name": "Companies applied to", "options": []}}
+T_MAPPING = [
+    {"column": "config:application_type", "field_id": "field-6000986", "type": "multi_dropdown",
+     "scope": "list", "mode": "add_missing", "label": ""},
+    {"column": "job_title", "field_id": "field-6000989", "type": "template", "scope": "list",
+     "mode": "append_text", "label": "[{submitted_at|date}: ]{job_title}[ ({company})]"},
+    {"column": "job_title", "field_id": "field-6000990", "type": "counter", "scope": "list",
+     "mode": "", "label": "field-6000989"},
+    {"column": "company", "field_id": "field-6000987", "type": "company_lookup", "scope": "list",
+     "mode": "add_missing", "label": ""},
+]
+T_ROW = {"email": "test.person@example.com", "first_name": "Test", "last_name": "Person",
+         "status": "new", "flags": "", "decision": "", "submitted_at": "2026-11-04",
+         "job_title": "Mechanical Engineer", "company": "CIWI"}
+
+
+def test_talent_new_person():
+    fake = FakeAffinity()
+    fake.orgs = [{"id": 700, "name": "CIWI"}]
+    plan = plan_row(dict(T_ROW), T_CFG, T_MAPPING, T_FIELDS, fake)
+    ops = {(w["field_id"], w["op"], str(w["display"])) for w in plan.writes}
+    assert ("field-6000986", "add", "Direct application") in ops
+    assert ("field-6000989", "add", "2026-11-04: Mechanical Engineer (CIWI)") in ops
+    assert ("field-6000990", "add", "1") in ops
+    assert ("field-6000987", "add", "CIWI") in ops
+
+
+def test_talent_second_application_existing_entry():
+    fake = FakeAffinity(
+        persons=[{"id": 9, "emails": ["test.person@example.com"]}],
+        person={"list_entries": [{"id": 77, "list_id": 376483}]},
+        fvs=[{"id": 1, "field_id": 6000986, "list_entry_id": 77, "value": {"id": 41, "text": "Open application"}},
+             {"id": 2, "field_id": 6000989, "list_entry_id": 77, "value": "2026-10-01: Process Engineer (AddOptics)"},
+             {"id": 3, "field_id": 6000990, "list_entry_id": 77, "value": 1},
+             {"id": 4, "field_id": 6000987, "list_entry_id": 77, "value": 500}])
+    fake.orgs = [{"id": 700, "name": "CIWI B.V."}]
+    plan = plan_row(dict(T_ROW), T_CFG, T_MAPPING, T_FIELDS, fake)
+    ops = {w["field_id"]: w for w in plan.writes}
+    assert ops["field-6000986"]["value"] == 42                     # Direct added next to Open
+    assert ops["field-6000989"]["value"] == ("2026-10-01: Process Engineer (AddOptics); "
+                                              "2026-11-04: Mechanical Engineer (CIWI)")
+    assert ops["field-6000990"]["op"] == "update" and ops["field-6000990"]["value"] == 2
+    assert ops["field-6000987"]["value"] == 700                    # legal suffix ignored
+    assert "field-5991214" not in ops                              # status untouched
+
+
+def test_talent_retry_does_not_double_count():
+    fake = FakeAffinity(
+        persons=[{"id": 9, "emails": ["test.person@example.com"]}],
+        person={"list_entries": [{"id": 77, "list_id": 376483}]},
+        fvs=[{"id": 1, "field_id": 6000986, "list_entry_id": 77, "value": {"id": 42, "text": "Direct application"}},
+             {"id": 2, "field_id": 6000989, "list_entry_id": 77, "value": "2026-11-04: Mechanical Engineer (CIWI)"},
+             {"id": 3, "field_id": 6000990, "list_entry_id": 77, "value": 1},
+             {"id": 4, "field_id": 6000987, "list_entry_id": 77, "value": 700}])
+    fake.orgs = [{"id": 700, "name": "CIWI"}]
+    plan = plan_row(dict(T_ROW), T_CFG, T_MAPPING, T_FIELDS, fake)
+    assert plan.writes == []
+
+
+def test_company_not_found_is_soft():
+    fake = FakeAffinity()
+    fake.orgs = []
+    plan = plan_row(dict(T_ROW), T_CFG, T_MAPPING, T_FIELDS, fake)
+    assert not plan.problems
+    assert "field-6000987" not in [w["field_id"] for w in plan.writes]
+    assert any("not found" in m for m in plan.messages)
