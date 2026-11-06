@@ -14,7 +14,7 @@ Required: `email`, `first_name`, `last_name`, `flags`, `decision`, `status`,
 
 | status | flags | decision | result |
 |---|---|---|---|
-| new | empty | anything | uploaded |
+| new | empty, or only flags listed in `ignore_flags` | anything | uploaded |
 | new or review | anything | approve | uploaded |
 | anything else | | | left alone |
 
@@ -33,7 +33,7 @@ In dry-run mode `status` is not changed; `message` starts with `DRY RUN would:` 
 | key | example | meaning |
 |---|---|---|
 | affinity_list_id | 373806 | target list |
-| entity_type | person | only `person` is supported in v1 |
+| entity_type | person | only `person` is supported so far |
 | affinity_status_field_id | field-5966848 | Status field of the list |
 | affinity_status_value | New | Status set on new list entries |
 | dry_run | TRUE | TRUE = only report, write nothing to Affinity. Default TRUE when missing |
@@ -41,6 +41,8 @@ In dry-run mode `status` is not changed; `message` starts with `DRY RUN would:` 
 | note_title | MYCF registration | first line of the note, followed by the edition |
 | log_reason | MYCF registration upload | `reason` column in the Claude Affinity action log |
 | log_context_note | MYCF New Entries | `context_note` column in the Claude Affinity action log |
+| ignore_flags | invalid_phone, linkedin_not_usable | flags that don't block an upload (the affected field just stays empty) |
+| (any other key) | application_type = Direct application | usable in Mapping as `config:<key>` |
 
 ## Mapping
 
@@ -48,12 +50,21 @@ One row per sheet column that goes to Affinity. Adding a field = adding a row.
 
 | column | values |
 |---|---|
-| sheet_column | header in Entries (case-insensitive) |
+| sheet_column | header in Entries (case-insensitive), or `config:<key>` for a fixed value from the Config tab |
 | affinity_field_id | e.g. `field-5991544`; empty for `note` |
-| field_type | `text`, `phone`, `date`, `country`, `dropdown`, `multi_dropdown`, `boolean_dropdown`, `note` |
+| field_type | `text`, `phone`, `date`, `country`, `dropdown`, `multi_dropdown`, `boolean_dropdown`, `template`, `company_lookup`, `counter`, `note` |
 | scope | `list` (field on the list entry) or `global` (field on the person) |
-| write_mode | `fill_if_empty` (never overwrite), `set` (overwrite on a repeat registration), `append_text` (add to existing text, e.g. editions), `note` |
-| label | heading used inside the note (only for `note` rows) |
+| write_mode | `fill_if_empty` (never overwrite), `set` (overwrite on a repeat registration), `append_text` (add to existing text, e.g. editions), `add_missing` (multi-value fields: add values that aren't there yet), `note` |
+| label | `note`: heading inside the note. `template`: the text template. `counter`: field ID whose change triggers the +1 |
+
+**Special field types**
+- `template`: builds text from several columns. `{column}` is the value, `{column|date}` its first 10 characters,
+  and a part in `[square brackets]` is left out when a placeholder inside it is empty.
+  Example: `[{submitted_at|date}: ]{job_title}[ ({company})]`.
+- `company_lookup`: finds the Affinity organization with this name (legal suffixes like B.V. ignored).
+  Exactly one match is written; none or several only adds a remark to `message`, the rest of the row still uploads.
+- `counter`: adds 1 to a number field, but only when the field named in `label` changes in the same row,
+  so a retried row is not counted twice.
 
 Dropdown values must match existing options exactly (case-insensitive). The uploader never creates new dropdown options.
 
@@ -61,7 +72,7 @@ Dropdown values must match existing options exactly (case-insensitive). The uplo
 9 digits starting with 6 is a Dutch mobile, other digit strings get a `+`.
 
 **Repeat registration** (person already on the list): no new list entry, Status untouched,
-`append_text` and `set` fields updated, all other fields only filled when empty.
+`set`, `append_text` and `add_missing` fields updated, all other fields only filled when empty.
 **Existing person not yet on the list**: added to the list; global fields only filled when empty.
 
 ## Aliases (optional)
