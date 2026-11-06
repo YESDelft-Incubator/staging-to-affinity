@@ -48,10 +48,13 @@ def match_multi_dropdown(value, options):
     first; whatever text is left over is returned as unknown.
     Returns (matched_options, unknown_parts).
     """
-    remaining = ", " + value.strip() + ", "
+    def norm(t):  # Webflow sends "A,B", Typeform "A, B": compare both as "A, B"
+        return re.sub(r"\s*,\s*", ", ", t.strip())
+
+    remaining = ", " + norm(value) + ", "
     matched = []
     for o in sorted(options, key=lambda o: len(o["text"]), reverse=True):
-        token = ", " + o["text"].strip() + ", "
+        token = ", " + norm(o["text"]) + ", "
         idx = remaining.lower().find(token.lower())
         if idx >= 0:
             matched.append(o)
