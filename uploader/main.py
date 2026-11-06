@@ -10,7 +10,7 @@ Each staging sheet has these tabs:
   Mapping  which sheet column goes to which Affinity field (see docs/staging_sheet.md)
   Aliases  optional: sheet values that differ from the Affinity option text
 
-Version 1 supports person lists (MYCF). Company lists (scouting) come next.
+Supports person lists (MYCF, Talent List). Company lists (scouting) come next.
 """
 import json
 import os
@@ -88,11 +88,26 @@ class RowPlan:
         self.messages = []
 
 
-def convert(m, raw, fields, aliases=()):
-    """Sheet value -> list of (affinity_value, display_text). Raises ValueError on problems."""
+class SoftSkip(Exception):
+    """Value can't be written, but that shouldn't send the row to review (e.g. company not in Affinity)."""
+
+
+def convert(m, raw, fields, aliases=(), row=None, aff=None):
+    """Sheet value -> list of (affinity_value, display_text).
+    Raises ValueError (row goes to review) or SoftSkip (only this field is skipped)."""
     t = m["type"]
     if t == "text":
         return [(raw.strip(), raw.strip())]
+    if t == "template":
+        text = V.render_template(m["label"], row or {})
+        return [(text, text)] if text else []
+    if t == "company_lookup":
+        target = V.normalise_company(raw)
+        orgs = [o for o in aff.find_organizations(raw.strip())
+                if V.normalise_company(o.get("name")) == target]
+        if len(orgs) != 1:
+            raise SoftSkip(f"company '{raw}' {'not found' if not orgs else 'matches ' + str(len(orgs)) + ' organizations'} in Affinity")
+        return [(orgs[0]["id"], orgs[0]["name"])]
     if t == "phone":
         p = V.normalise_phone(raw)
         if not p:
@@ -130,7 +145,21 @@ def convert(m, raw, fields, aliases=()):
 
 def existing_text(fv):
     v = fv.get("value")
-    return v.get("text", "") if isinstance(v, dict) else ("" if v is None else str(v))
+    if isinstance(v, dict):
+        return v.get("text") or v.get("name") or ""
+    return "" if v is None else str(v)
+
+
+def existing_id(fv):
+    v = fv.get("value")
+    return v.get("id") if isinstance(v, dict) else v
+
+
+def raw_value(m, row, cfg):
+    """'config:<key>' reads the Config tab; anything else is a column in Entries."""
+    if m["column"].startswith("config:"):
+        return (cfg.get(m["column"].split(":", 1)[1].strip()) or "").strip()
+    return (row.get(m["column"]) or "").strip()
 
 
 def plan_row(row, cfg, mapping, fields, aff, aliases=()):
@@ -143,16 +172,21 @@ def plan_row(row, cfg, mapping, fields, aff, aliases=()):
         raise ValueError("no email in row")
 
     # 1. convert sheet values; collect problems instead of failing on the first one
-    converted, note_parts = [], []
+    converted, note_parts, counters = [], [], []
     for m in mapping:
-        raw = (row.get(m["column"]) or "").strip()
+        raw = raw_value(m, row, cfg)
         if not raw:
             continue
         if m["type"] == "note":
             note_parts.append(f"{m['label'] or m['column']}:\n{raw}")
             continue
+        if m["type"] == "counter":
+            counters.append(m)
+            continue
         try:
-            converted.append((m, convert(m, raw, fields, aliases)))
+            converted.append((m, convert(m, raw, fields, aliases, row, aff)))
+        except SoftSkip as e:
+            plan.messages.append(f"skipped: {e}")
         except ValueError as e:
             plan.problems.append(str(e))
     if plan.problems and not approved:
@@ -185,7 +219,7 @@ def plan_row(row, cfg, mapping, fields, aff, aliases=()):
     if not plan.list_entry_id:
         plan.create_list_entry = True
     else:
-        plan.messages.append("already on list: only empty fields filled, edition appended")
+        plan.messages.append("already on list: existing values kept except set/append/add_missing fields")
 
     # 3. status on new list entries only
     if plan.create_list_entry and cfg.get("affinity_status_field_id"):
@@ -209,6 +243,13 @@ def plan_row(row, cfg, mapping, fields, aff, aliases=()):
             else:
                 plan.writes.append({"field_id": m["field_id"], "scope": m["scope"], "op": "add",
                                     "value": vals[0][0], "display": vals[0][1], "old": "(empty)"})
+        elif m["mode"] == "add_missing":
+            have = {existing_id(fv) for fv in current}
+            for value, display in vals:
+                if value not in have:
+                    plan.writes.append({"field_id": m["field_id"], "scope": m["scope"], "op": "add",
+                                        "value": value, "display": display, "old": ", ".join(
+                                            existing_text(fv) for fv in current) or "(empty)"})
         elif m["mode"] == "set" and current and len(vals) == 1:
             if existing_text(current[0]) != str(vals[0][1]):
                 plan.writes.append({"field_id": m["field_id"], "scope": m["scope"], "op": "update",
@@ -220,6 +261,25 @@ def plan_row(row, cfg, mapping, fields, aff, aliases=()):
             for value, display in vals:
                 plan.writes.append({"field_id": m["field_id"], "scope": m["scope"], "op": "add",
                                     "value": value, "display": display, "old": "(empty)"})
+
+    # 5. counters: +1, but only when the field named in 'label' actually changes,
+    #    so a retried row (whose application text is already there) isn't counted twice
+    changed = {w["field_id"] for w in plan.writes}
+    for m in counters:
+        if m["label"] and m["label"] not in changed:
+            continue
+        current = (existing_global if m["scope"] == "global" else existing_list).get(m["field_id"], [])
+        if current:
+            try:
+                old = int(float(existing_text(current[0]) or 0))
+            except ValueError:
+                old = 0
+            plan.writes.append({"field_id": m["field_id"], "scope": m["scope"], "op": "update",
+                                "fv_id": current[0]["id"], "value": old + 1, "display": old + 1,
+                                "old": str(old)})
+        else:
+            plan.writes.append({"field_id": m["field_id"], "scope": m["scope"], "op": "add",
+                                "value": 1, "display": 1, "old": "(empty)"})
 
     if note_parts:
         edition = (row.get("mycf_edition") or "").strip()
@@ -328,6 +388,7 @@ def run_sheet(gc, aff, sheet_id):
     cfg = read_config(sh)
     mapping = read_mapping(sh)
     aliases = read_aliases(sh)
+    ignore_flags = V.split_flags(cfg.get("ignore_flags", ""))
     dry_run = truthy(cfg.get("dry_run"), default=True)
     max_rows = int(cfg.get("max_rows_per_run") or DEFAULT_MAX_ROWS)
     if cfg.get("entity_type", "person") != "person":
@@ -355,7 +416,7 @@ def run_sheet(gc, aff, sheet_id):
     done = 0
     for i, values in enumerate(data[1:], start=2):
         row = {h: (values[j] if j < len(values) else "") for j, h in enumerate(header)}
-        if not V.row_is_eligible(row):
+        if not V.row_is_eligible(row, ignore_flags):
             continue
         if done >= max_rows:
             print(f"[{sh.title}] max_rows_per_run={max_rows} reached; rest waits for next run")
