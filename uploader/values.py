@@ -7,16 +7,21 @@ from datetime import datetime
 
 
 # ---- which rows go to Affinity ------------------------------------------
-def row_is_eligible(row):
+def split_flags(text):
+    return [f.strip().lower() for f in re.split(r"[,;\s]+", text or "") if f.strip()]
+
+
+def row_is_eligible(row, ignore_flags=()):
     """Upload rule agreed with the scouting team (Nov 2026):
-    - status 'new' and no flags                      -> upload
+    - status 'new' and no blocking flags              -> upload
     - status 'new' or 'review' and decision 'approve' -> upload
     - anything else                                   -> leave alone
-    """
+    Flags listed in ignore_flags (Config) don't block, e.g. invalid_phone."""
     status = (row.get("status") or "").strip().lower()
-    flags = (row.get("flags") or "").strip()
+    ignore = {f.lower() for f in ignore_flags}
+    blocking = [f for f in split_flags(row.get("flags")) if f not in ignore]
     decision = (row.get("decision") or "").strip().lower()
-    if status == "new" and not flags:
+    if status == "new" and not blocking:
         return True
     return status in ("new", "review") and decision == "approve"
 
@@ -109,6 +114,51 @@ def normalise_phone(value):
     else:
         out = "+" + digits
     return out if 9 <= len(out) - 1 <= 15 else None
+
+
+# ---- templates -----------------------------------------------------------
+def render_template(template, values):
+    """'{col}' is replaced by the row value, '{col|date}' by its first 10 characters.
+    A part in [square brackets] is dropped when any placeholder inside it is empty,
+    e.g. '{submitted_at|date}: {job_title}[ ({company})]'."""
+    def fill(part):
+        empty = False
+
+        def sub(m):
+            nonlocal empty
+            name, _, fmt = m.group(1).partition("|")
+            v = str(values.get(name.strip().lower(), "") or "").strip()
+            if fmt.strip() == "date":
+                v = v[:10]
+            if not v:
+                empty = True
+            return v
+        out = re.sub(r"\{([^{}]+)\}", sub, part)
+        return out, empty
+
+    result = []
+    for opt, plain in re.findall(r"\[([^\[\]]*)\]|([^\[\]]+)", template):
+        if opt:
+            text, empty = fill(opt)
+            if not empty:
+                result.append(text)
+        else:
+            text, _ = fill(plain)
+            result.append(text)
+    return "".join(result).strip()
+
+
+# ---- company names -------------------------------------------------------
+LEGAL_SUFFIX = re.compile(r"[\s,]+(b\.?\s?v\.?|n\.?\s?v\.?|ltd\.?|gmbh|inc\.?|bv|holding)$", re.I)
+
+
+def normalise_company(name):
+    """'Villari B.V.' and 'villari' compare equal; used for organization lookup only."""
+    n = re.sub(r"\s+", " ", (name or "").strip().lower())
+    prev = None
+    while prev != n:
+        prev, n = n, LEGAL_SUFFIX.sub("", n).strip()
+    return n
 
 
 # ---- countries -----------------------------------------------------------
